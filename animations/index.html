@@ -1,0 +1,404 @@
+<script src="lib/md5.js"></script>
+<script src="lib/bundle.js"></script>
+<script src="lib/jszip.min.js"></script>
+<script src="lib/FileSaver.js"></script>
+
+<div style="display:flex; flex-direction: row">
+    <canvas id="canvas">
+    </canvas>
+    <div id="links" style="margin-left: 5px; margin-right: 50px"></div>
+    <pre id="json" style="margin: 5px; font-size: smaller; background-color: beige; max-height: 300px;
+       overflow: scroll"></pre>
+</div>
+
+<script id="vertexShader" type="x-shader/x-vertex">
+attribute vec4 position;
+attribute vec2 textureCoordinate;
+varying vec2 ftextureCoordinate;
+
+void main() {
+    gl_Position = position;
+    ftextureCoordinate = textureCoordinate;
+}
+</script>
+
+<script id="fragmentShader" type="x-shader/x-fragment">
+precision mediump float;
+uniform sampler2D sampler0;
+varying vec2 ftextureCoordinate;
+
+void main() {
+   gl_FragColor = texture2D(sampler0, ftextureCoordinate);
+}
+    </script>
+
+<script>
+
+    function getQueryVariable(variable) {
+        var query = window.location.search.substring(1);
+        var vars = query.split('&');
+        for (var i = 0; i < vars.length; i++) {
+            var pair = vars[i].split('=');
+            if (decodeURIComponent(pair[0]) == variable) {
+                return decodeURIComponent(pair[1]);
+            }
+        }
+    }
+
+    var files = [
+        "/json/oozie.json",
+        "/json/combined-oozie.json",
+        "/json/kylo.json",
+        "/json/combined-kylo.json"
+    ];
+    url = getQueryVariable("url") || files[0];
+
+    var links = document.getElementById('links');
+    var header = links.appendChild(document.createElement("div"));
+    header.innerText = "Animations:";
+    header.style.marginBottom = "10px";
+    for(var i=0; i<files.length; i++) {
+        var a = links.appendChild(document.createElement('a'));
+        a.innerText = files[i].split("/").pop();
+        if(files[i] !== url) {
+            a.href = "?url=" + files[i];
+        }
+        links.appendChild(document.createElement("br"));
+    }
+
+
+    var canvasMap = {};
+    var readyCanvas = {};
+    var data = {};
+    var vertexPositionBuffer, textureCoordinatesBuffer;
+    var vertexArray, texArray;
+    var currentFilename = null;
+
+    function loadImage(tag, canvas) {
+        var image = new Image();
+        image.src = "assets/" + tag + ".png";
+        image.addEventListener("load", function() {
+            for(var w=1; w<image.naturalWidth;w<<=1) {
+            }
+            for(var h=1; h<image.naturalHeight;h<<=1) {
+            }
+            canvas.width = w;
+            canvas.height = h;
+            canvas.getContext('2d').drawImage(image,0,0);
+            readyCanvas[tag] = true;
+            image = null;
+        });
+    }
+
+    function loadAnimation(filename) {
+        currentFilename = filename.split("/").pop();
+        var oReq = new XMLHttpRequest();
+        oReq.addEventListener("load", function() {
+            document.getElementById("json").innerText = this.responseText;
+
+            var json = JSON.parse(this.responseText);
+            data = json;
+            var tagCount = 0;
+            json.sprites.forEach(function(sprite) {
+                var tag = sprite[0];
+                if (!canvasMap[tag]) {
+                    var canvas = document.createElement('canvas');
+                    canvas.ready = false;
+                    loadImage(tag, canvas);
+                    canvasMap[tag] = canvas;
+                    tagCount++;
+                }
+            });
+
+            if(tagCount>1) {
+                var button = document.body.appendChild(document.createElement('button'));
+                button.innerText = 'combine into one spritesheet';
+                button.style.marginTop = "5px";
+                button.addEventListener("click", combine);
+            }
+            startAnimation();
+        });
+        oReq.open("GET", filename, true);
+        oReq.send();
+    }
+
+    var textureTag = null;
+    function refreshTexture(gl, texture, imageCanvas, sprite) {
+        if(textureTag !== sprite[0]) {
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA, gl.RGBA,gl.UNSIGNED_BYTE,imageCanvas);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            textureTag = sprite[0];
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordinatesBuffer);
+
+        texArray[0] = texArray[6] = sprite[1] / imageCanvas.width;
+        texArray[1] = texArray[3] = (sprite[2] + sprite[4]) / imageCanvas.height;
+        texArray[2] = texArray[4] = (sprite[1] + sprite[3]) / imageCanvas.width;
+        texArray[5] = texArray[7] = sprite[2] / imageCanvas.height;
+        gl.bufferData(gl.ARRAY_BUFFER, texArray, gl.STATIC_DRAW);
+    }
+
+    function prepareBuffers(gl, shaderProgram) {
+        vertexPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBuffer);
+        vertexArray = new Float32Array([
+            -1, -1, 0,
+            1, -1, 0,
+            1,  1, 0,
+            -1,  1, 0
+        ]);
+        gl.bufferData(gl.ARRAY_BUFFER, vertexArray, gl.STATIC_DRAW);
+
+        textureCoordinatesBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordinatesBuffer);
+        texArray = new Float32Array([
+            0.0, 0.0,
+            1.0, 0.0,
+            1.0, 1.0,
+            0.0, 1.0,
+        ]);
+        gl.bufferData(gl.ARRAY_BUFFER, texArray, gl.STATIC_DRAW);
+
+        var vertexIndicesBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, vertexIndicesBuffer);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0,1,2,0,2,3]), gl.STATIC_DRAW);
+
+        var positionAttributeLocation = gl.getAttribLocation(shaderProgram, 'position');
+        gl.enableVertexAttribArray(positionAttributeLocation);
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBuffer);
+        gl.vertexAttribPointer(positionAttributeLocation, 3, gl.FLOAT, false, 0, 0);
+
+        var textureCoordinateAttributeLocation = gl.getAttribLocation(shaderProgram, 'textureCoordinate');
+        gl.enableVertexAttribArray(textureCoordinateAttributeLocation);
+        gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordinatesBuffer);
+        gl.vertexAttribPointer(textureCoordinateAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+    }
+
+    function setPosition(gl, vertextPositionBuffer, vertexArray, rect, size) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBuffer);
+        for(var i=0; i<rect.length; i++) {
+            var x = 2*(rect[i][0] / size[0])-1;
+            var y = 2*(1 - rect[i][1] / size[1])-1;
+            vertexArray[i*3] = x;
+            vertexArray[i*3 + 1] = y;
+        }
+        gl.bufferData(gl.ARRAY_BUFFER, vertexArray, gl.STATIC_DRAW);
+    }
+
+    var info = document.createElement('div');
+    document.body.appendChild(info);
+    function display(gl, canvas, texture, frameObject, frameIdToLabel) {
+        var tag = data.sprites[frameObject.tag][0];
+        var imageCanvas = canvasMap[tag];
+        if(imageCanvas && readyCanvas[tag]) {
+            refreshTexture(gl, texture, imageCanvas, data.sprites[frameObject.tag]);
+            setPosition(gl, vertexPositionBuffer, vertexArray, frameObject.rect, data.size);
+            gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+        }
+        if(info.innerText !== frameIdToLabel[frameObject.frame]) {
+            info.innerText = frameIdToLabel[frameObject.frame];
+        }
+    }
+
+    function startAnimation() {
+        // prepare animation
+        var frameIdToFrame = [];
+        var frameIdToLabel = [];
+        var lastFrameIndex = -1;
+        var label = null;
+        for(var i=1; i <= data.frameCount; i++) {
+            var nextFrameIndex = lastFrameIndex+1;
+            var nextFrame = data.frames[nextFrameIndex];
+            if(nextFrame && i>= nextFrame.frame) {
+                lastFrameIndex = nextFrameIndex;
+            }
+
+            if(data.frames[lastFrameIndex].label) {
+                label = data.frames[lastFrameIndex].label;
+            }
+            frameIdToFrame[i] = data.frames[lastFrameIndex];
+            frameIdToLabel[i] = label;
+        }
+
+        var canvas = document.getElementById('canvas');
+        canvas.width = data.size[0];
+        canvas.height = data.size[1];
+        canvas.style.width = (canvas.width / 2) + "px";
+        canvas.style.height = (canvas.height / 2) + "px";
+        canvas.style.backgroundColor = data.backgroundColor;
+
+        var gl = canvas.getContext('webgl');
+        var texture = gl.createTexture();
+        var vertexShader = getAndCompileShader(gl, 'vertexShader', 'vertex');
+        var fragmentShader = getAndCompileShader(gl, 'fragmentShader', 'fragment');
+
+        var shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            console.log('Could not link shaders');
+        }
+        gl.useProgram(shaderProgram);
+
+        prepareBuffers(gl, shaderProgram);
+
+        lastFrameIndex = -1;
+        function refresh(time) {
+            var frameId = 1 + Math.floor(time * data.fps / 1000) % data.frameCount;
+            var frameObject = frameIdToFrame[frameId];
+            if(frameObject.frame !== lastFrameIndex) {
+                display(gl, document.getElementById('canvas'), texture, frameObject, frameIdToLabel);
+                lastFrameIndex = frameObject.frame;
+            }
+            requestAnimationFrame(refresh);
+        }
+        requestAnimationFrame(refresh);
+    }
+
+    function getAndCompileShader(gl, id, shaderType) {
+        var shader;
+        var shaderElement = document.getElementById(id);
+        var shaderText = shaderElement.text.trim();
+        shader = gl.createShader(
+            shaderType==='vertex' ? gl.VERTEX_SHADER : gl.FRAGMENT_SHADER
+        );
+        gl.shaderSource(shader, shaderText);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            console.log(gl.getShaderInfoLog(shader));
+            return true;
+        }
+        return shader;
+    }
+
+    document.addEventListener("DOMContentLoaded", function() {
+        loadAnimation(url);
+    });
+</script>
+
+
+<script>
+    function getCombinedWidth(sprites) {
+        return sprites.reduce(function(accumulator, sprite) {
+            return accumulator + sprite[3];//  width
+        }, 0);
+    }
+
+    function getRectSize(sprites, maxWidth) {
+        var dims = getDimensions(sprites, maxWidth);
+        var maxW=0, maxH=0;
+        dims.forEach(function(dim) {
+            maxW = Math.max(dim[0] + dim[2], maxW);
+            maxH = Math.max(dim[1] + dim[3], maxH);
+        });
+        return [maxW, maxH];
+    }
+
+    function getDimensions(sprites, maxWidth) {
+        var currentX = 0;
+        var maxY = 0, currentY = 0;
+        var dimensions = [];
+        sprites.forEach(function(sprite) {
+            if (currentX + sprite[3] > maxWidth) {
+                currentX = 0;
+                currentY = maxY;
+                maxY = 0;
+            }
+            dimensions.push([
+                currentX,
+                currentY,
+                sprite[3],
+                sprite[4]
+            ]);
+
+            currentX += sprite[3];
+            maxY = Math.max(maxY, currentY + sprite[4]);
+        });
+        return dimensions;
+    }
+
+    function combine() {
+        var smallestNum = Number.MAX_VALUE;
+        var bestSize = null;
+        data.sprites.forEach(function(sprite, i, array) {
+            var w = getCombinedWidth(array.slice(0,i+1));
+            var size = getRectSize(array, w);
+            var bigLength = Math.max(size[0], size[1]);
+            console.log(size);
+            if(bigLength < smallestNum) {
+                smallestNum = bigLength;
+                bestSize = size;
+            }
+        });
+
+        console.log(bestSize);
+        var dims = getDimensions(data.sprites, bestSize[0]);
+        console.log(dims);
+
+        var container = document.body.appendChild(document.createElement('div'));
+        var canvas = container.appendChild(document.createElement('canvas'));
+
+        canvas.width = bestSize[0];
+        canvas.height = bestSize[1];
+        canvas.style.width = canvas.width/2 + "px";
+        canvas.style.height = canvas.height/2 + "px";
+        var ctx = canvas.getContext("2d");
+
+        data.sprites.forEach(function(sprite, i) {
+            var dim = dims[i];
+            ctx.drawImage(canvasMap[sprite[0]],
+                sprite[1], sprite[2], sprite[3], sprite[4],
+                dim[0], dim[1], dim[2], dim[3]
+            );
+        });
+
+        var newmd5 = md5(data.sprites.map(
+            function(sprite) { return sprite[0]; }
+        ).join(","));
+
+
+        var newdata = {};
+        for(var i in data) {
+            newdata[i] = data[i];
+        }
+        newdata.sprites = dims.map(function(dim) {
+            return [newmd5].concat(dim);
+        });
+
+
+        var button = document.body.appendChild(document.createElement("a"));
+        button.href = "#";
+        button.innerText = "Download";
+        button.style.display = "none";
+        button.addEventListener('click', function (e) {
+            var zip = new JSZip();
+            zip.file("combined-" + currentFilename, JSON.stringify(newdata, null, '\t'));
+            zip.file(newmd5 + ".png", canvas.toDataURL('image/png').split(",")[1], {base64: true});
+            zip.generateAsync({type:"blob"})
+                .then(function(content) {
+                     saveAs(content, replaceExtension(currentFilename, "zip"));
+                });
+
+
+        });
+        button.click();
+        document.body.removeChild(button);
+
+    }
+
+    function replaceExtension(filename, extension) {
+        var split = filename.split(".");
+        if(split.length>1) {
+            split.length--;
+        }
+        return split.concat([extension]).join(".")
+    }
+
+</script>
