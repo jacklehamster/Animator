@@ -23,7 +23,7 @@
 		private var tempBitmap:BitmapData = new BitmapData(1,1);
 		private var rect:Rectangle;
 		private var savedHash:Object = {};
-		private var dir:File;
+		static private var dir:File;
 		private var data:Object;
 		private var frame:int = 1;
 		private var dim:Object = {};
@@ -31,29 +31,80 @@
 		private var maxWidth:int=0, maxHeight:int=0;
 		private var stopped:Boolean = false;
 		private var shape:Shape = new Shape();
+		private var hotSpot:Point = new Point();
+		
+		static private var globalFrame:int = 1;
+		static private var globalMovie:MovieClip = null;
+		static private var globalMcs:Array = [];
+		static private var globalId:int = 0;
+		private var id:int;
 		
 		public function Thingy() {
-			dir = File.documentsDirectory.resolvePath("animations");
+			globalId++;
+			id = globalId;
+			if(!dir) {
+				dir = File.userDirectory.resolvePath("Sites")
+					.resolvePath("dobuki.net")
+					.resolvePath("dobuki.net")
+					.resolvePath("public")
+					.resolvePath("webgl")
+					.resolvePath("animation3");
+//				dir = File.documentsDirectory.resolvePath("animations");				
+			}
 			addEventListener(Event.ADDED_TO_STAGE, onStage);
 			addEventListener(Event.REMOVED_FROM_STAGE, offStage);
 			visible = false;
+			if(globalMovie) {
+				globalMovie = new MovieClip();
+				globalMovie.addEventListener(Event.ENTER_FRAME, onGlobalFrame);
+			}
+			saveGlobal(this);
+		}
+		
+		static private function saveGlobal(mc:MovieClip):void {
+			var owner:MovieClip = MovieClip(mc.parent);
+			var globalPoint:Point = owner.localToGlobal(new Point());
+			
+			globalMcs.push({
+				type: mc.name,
+				name: mc.name + mc.id,
+				frame: globalFrame,
+				position: [globalPoint.x, globalPoint.y]
+			});
+			
+			var file:File = dir.resolvePath("globalscene.json");
+			var fileStream:FileStream = new FileStream();
+			fileStream.open(file, FileMode.WRITE);
+			fileStream.writeUTFBytes(JSON.stringify({
+				elements: globalMcs,
+				size: [mc.stage.stageWidth, mc.stage.stageHeight],
+				fps: mc.stage.frameRate,
+				backgroundColor: "#" + (mc.stage.color & 0xFFFFFF).toString(16)
+			},null,'\t'));
+			fileStream.close();			
+
+		}
+		
+		static private function onGlobalFrame(e:Event):void {
+			globalFrame++;
 		}
 		
 		private function onStage(e:Event):void {
 			var owner:MovieClip = MovieClip(parent);
-			var hotSpot:Point = owner.localToGlobal(new Point());
+			hotSpot = owner.localToGlobal(new Point());
 			data = {
 				frames:[],
 				sprites:[],
-				fps: stage.frameRate,
-				frameCount: owner.totalFrames,
-				hotSpot:[hotSpot.x,hotSpot.y],
-				backgroundColor: "#" + (stage.color & 0xFFFFFF).toString(16)
+				frameCount: owner.totalFrames
 			}
 			
 			addEventListener(Event.ENTER_FRAME, onFrame);		
 			refresh();
 		}
+		
+//		static private function saveGlobalScene():void {
+//			
+//		}
 		
 		private function offStage(e:Event):void {
 			removeEventListener(Event.ADDED_TO_STAGE, onStage);
@@ -129,13 +180,14 @@
 					}
 				}
 			}
-			
+				
 			if(topLine >0 || bottomLine < bitmap.bitmapData.height-1 
 					|| leftLine >0 || rightLine < bitmap.bitmapData.width-1) {
 				var bitmapData2:BitmapData = new BitmapData(
 					rightLine-leftLine+1,
 					bottomLine-topLine+1,
-					true
+					true,
+					0
 				);
 				bitmapData2.copyPixels(bitmap.bitmapData,
 					new Rectangle(leftLine,topLine,rightLine-leftLine+1,bottomLine-topLine+1),
@@ -169,6 +221,7 @@
 			if(tag !== md5) {
 				tag = md5;
 				if(!savedHash[tag]) {
+					//trace(name, tag);
 					saveBytes(tag, bitmap.bitmapData);
 					savedHash[tag] = true;
 					data.sprites.push([
@@ -182,6 +235,7 @@
 				tag: findTag(md5, data),
 				rect: getStageDimension(rect)
 			};
+			var didChange:Boolean = false;
 			if(dimdim.tag !== dim.tag 
 				|| JSON.stringify(dimdim.rect) !== JSON.stringify(dim.rect)
 				|| MovieClip(parent).currentLabel !== previousLabel
@@ -193,25 +247,24 @@
 				
 				if(dim.rect) {
 					shape.graphics.lineStyle(1,0xFF0000);
-					shape.graphics.moveTo(dim.rect[0][0],dim.rect[0][1]);
-					shape.graphics.lineTo(dim.rect[1][0],dim.rect[1][1]);
-					shape.graphics.lineTo(dim.rect[2][0],dim.rect[2][1]);
-					shape.graphics.lineTo(dim.rect[3][0],dim.rect[3][1]);
-					shape.graphics.lineTo(dim.rect[0][0],dim.rect[0][1]);
+					shape.graphics.moveTo(dim.rect[0][0]+hotSpot.x,dim.rect[0][1]+hotSpot.y);
+					shape.graphics.lineTo(dim.rect[1][0]+hotSpot.x,dim.rect[1][1]+hotSpot.y);
+					shape.graphics.lineTo(dim.rect[2][0]+hotSpot.x,dim.rect[2][1]+hotSpot.y);
+					shape.graphics.lineTo(dim.rect[3][0]+hotSpot.x,dim.rect[3][1]+hotSpot.y);
+					shape.graphics.lineTo(dim.rect[0][0]+hotSpot.x,dim.rect[0][1]+hotSpot.y);
 				}
 				stage.addChild(shape);
 					
 				dim = dimdim;
 				addDimension(dimdim);
 				
-				dim.rect.forEach(function(pos,index,array) {
-					maxWidth = Math.max(maxWidth, Math.ceil(pos[0]+1));
-					maxHeight = Math.max(maxHeight, Math.ceil(pos[1]+1));					
-				});
-				data.size = [maxWidth, maxHeight];
+				didChange = true;
 			}
 			if(frame > data.frameCount) {
 				data.frameCount = frame;
+				didChange = true;
+			}
+			if(didChange) {
 				save();
 			}
 			
@@ -223,7 +276,7 @@
 		}
 		
 		private function save():void {
-			var file:File = dir.resolvePath("json").resolvePath(name + ".json");
+			var file:File = dir.resolvePath("json").resolvePath(name + id + ".json");
 			var fileStream:FileStream = new FileStream();
 			fileStream.open(file, FileMode.WRITE);
 			fileStream.writeUTFBytes(JSON.stringify(data,null,'\t'));
@@ -246,10 +299,10 @@
 		private function getStageDimension(rect:Rectangle):Object {
 			var r:Rectangle = rect;
 			var owner:MovieClip = MovieClip(parent);
-			var topLeft:Point = owner.localToGlobal(r.topLeft);
-			var topRight:Point = owner.localToGlobal(new Point(r.right,r.top));
-			var bottomLeft:Point = owner.localToGlobal(new Point(r.left,r.bottom));
-			var bottomRight:Point = owner.localToGlobal(r.bottomRight);
+			var topLeft:Point = owner.localToGlobal(r.topLeft).subtract(hotSpot);
+			var topRight:Point = owner.localToGlobal(new Point(r.right,r.top)).subtract(hotSpot);
+			var bottomLeft:Point = owner.localToGlobal(new Point(r.left,r.bottom)).subtract(hotSpot);
+			var bottomRight:Point = owner.localToGlobal(r.bottomRight).subtract(hotSpot);
 			return [
 				[bottomLeft.x,bottomLeft.y],
 				[bottomRight.x,bottomRight.y],
@@ -260,11 +313,11 @@
 		
 		private function refresh():void {
 			var owner:MovieClip = MovieClip(parent);
-			rect = owner.getRect(owner);
-			var stageRect:Rectangle = owner.getRect(stage);
+			rect = owner.getBounds(owner);
+			var stageRect:Rectangle = owner.getBounds(stage);
 			var scale:Number = Math.max(
-				stageRect.width/rect.width,
-				stageRect.height/rect.height
+				stageRect.width/rect.width*2,
+				stageRect.height/rect.height*2
 			);
 			if(rect.width * scale != tempBitmap.width || rect.height * scale != tempBitmap.height) {
 				tempBitmap = new BitmapData(rect.width * scale,rect.height * scale,true);
